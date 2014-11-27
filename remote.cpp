@@ -52,7 +52,7 @@ bool switchLight(int action){
 	unsigned long started_waiting_at = millis();
 	bool timeout = false;
 	while ( ! radio.available() && ! timeout ) {
-		msleep(10);
+		sleep(10);
 		if (millis() - started_waiting_at > 1000 )
 			timeout = true;
 
