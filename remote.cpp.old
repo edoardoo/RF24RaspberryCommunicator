@@ -1,7 +1,10 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
 #include <string>
 #include <getopt.h>
 #include <cstdlib>
-#include <sstream>
 #include <iostream>
 #include <RF24/RF24.h>
 
@@ -9,7 +12,7 @@ using namespace std;
 //RF24 radio("/dev/spidev0.0",8000000 , 25);  
 //RF24 radio(RPI_V2_GPIO_P1_15, RPI_V2_GPIO_P1_24, BCM2835_SPI_SPEED_8MHZ);
 
-RF24 radio(RPI_V2_GPIO_P1_22, RPI_V2_GPIO_P1_24, BCM2835_SPI_SPEED_8MHZ);
+RF24 radio(25, RPI_V2_GPIO_P1_24, BCM2835_SPI_SPEED_8MHZ);
 //const int role_pin = 7;
 const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 //const uint8_t pipes[][6] = {"1Node","2Node"};
@@ -24,10 +27,10 @@ void setup(void){
 	//	radio.setPALevel(RF24_PA_MAX);
 	//	radio.setPALevel(RF24_PA_MAX);
 
-	radio.printDetails();
 	radio.openWritingPipe(pipes[0]);
 	radio.openReadingPipe(1,pipes[1]);
 	//	radio.startListening();
+	radio.printDetails();
 
 }
 
@@ -53,7 +56,9 @@ bool switchLight(int action){
 	bool timeout = false;
 	while ( ! radio.available() && ! timeout ) {
 		//printf("%d", !radio.available());
+		usleep(100);
 		if (millis() - started_waiting_at > 1000 ){
+
 			timeout = true;
 		}
 	}
@@ -93,7 +98,7 @@ int main( int argc, char ** argv){
 				switched = switchLight(atoi(optarg));
 
 				counter ++; 
-				sleep(1);
+
 			}
 
 

@@ -19,9 +19,8 @@
 #include "RF24.h"
 #include "printf.h"
 
-// Hardware configuration: Set up nRF24L01 radio on SPI bus plus pins CE 8, CSN 9
-// This is for UNO Adapter, pin 10 is Vcc
-RF24 radio(8,9);
+// Hardware configuration: Set up nRF24L01 radio on SPI bus plus pins 7 & 8 
+RF24 radio(7,8);
 
 // Topology
 const uint64_t pipes[2] = { 0xABCDABCD71LL, 0x544d52687CLL };              // Radio pipe addresses for the 2 nodes to communicate.
@@ -37,12 +36,6 @@ role_e role = role_pong_back;                                              // Th
 byte counter = 1;
 
 void setup(){
-
-// Simple codes for UNO nRF adapter that uses pin 10 as Vcc
-  pinMode(10,OUTPUT);
-  digitalWrite(10,HIGH);
-  delay(500);
-  
 
   Serial.begin(57600);
   printf_begin();

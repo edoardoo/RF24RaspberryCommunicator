@@ -13,6 +13,7 @@
  */
 
 #include <SPI.h>
+#include "nRF24L01.h"
 #include "RF24.h"
 #include "printf.h"
 
@@ -20,9 +21,9 @@
 // Hardware configuration
 //
 
-// Set up nRF24L01 radio on SPI bus plus pins 
-// CE = 8, CSN = 9
-RF24 radio(8,9);
+// Set up nRF24L01 radio on SPI bus plus pins 7 & 8
+
+RF24 radio(7,8);
 
 // sets the role of this unit in hardware.  Connect to GND to be the 'pong' receiver
 // Leave open to be the 'ping' transmitter
@@ -33,7 +34,7 @@ const int role_pin = 5;
 //
 
 // Radio pipe addresses for the 2 nodes to communicate.
-const uint64_t pipes[2] = { 0xEEFDFDFDECLL, 0xEEFDFDF0DFLL };
+const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
 //
 // Role management
@@ -58,7 +59,7 @@ role_e role;
 // Payload
 //
 
-const int min_payload_size = 1;
+const int min_payload_size = 4;
 const int max_payload_size = 32;
 const int payload_size_increments_by = 1;
 int next_payload_size = min_payload_size;
@@ -67,13 +68,6 @@ char receive_payload[max_payload_size+1]; // +1 to allow room for a terminating 
 
 void setup(void)
 {
-
-// Simple codes for UNO nRF adapter that uses pin 10 as Vcc
-
-pinMode(10,OUTPUT);
-digitalWrite(10,HIGH);
-delay(500);
-  
   //
   // Role
   //
@@ -105,13 +99,9 @@ delay(500);
   radio.begin();
 
   // enable dynamic payloads
-  radio.setCRCLength( RF24_CRC_16 ) ;
   radio.enableDynamicPayloads();
 
   // optionally, increase the delay between retries & # of retries
-  radio.setAutoAck( true ) ;
-  radio.setPALevel( RF24_PA_HIGH ) ;
-
   radio.setRetries(5,15);
 
   //
@@ -163,7 +153,7 @@ void loop(void)
 
     // Take the time, and send it.  This will block until complete
     printf("Now sending length %i...",next_payload_size);
-    radio.write( send_payload, next_payload_size, false );
+    radio.write( send_payload, next_payload_size );
 
     // Now, continue listening
     radio.startListening();
@@ -172,7 +162,7 @@ void loop(void)
     unsigned long started_waiting_at = millis();
     bool timeout = false;
     while ( ! radio.available() && ! timeout )
-      if (millis() - started_waiting_at > 1 + 5000/1000 )
+      if (millis() - started_waiting_at > 500 )
         timeout = true;
 
     // Describe the results

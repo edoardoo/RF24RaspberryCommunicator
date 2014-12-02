@@ -15,7 +15,12 @@
 #ifndef __RF24_H__
 #define __RF24_H__
 
-#include <RF24_config.h>
+#include "RF24_config.h"
+#if (defined (__linux) || defined (LINUX)) && !defined (__ARDUINO_X86__)
+  #include "RPi/bcm2835.h"
+#elif defined SOFTSPI
+  #include <DigitalIO.h>
+#endif
 
 /**
  * Power Amplifier level.
@@ -45,16 +50,29 @@ typedef enum { RF24_CRC_DISABLED = 0, RF24_CRC_8, RF24_CRC_16 } rf24_crclength_e
 class RF24
 {
 private:
+#ifdef SOFTSPI
+  SoftSPI<SOFT_SPI_MISO_PIN, SOFT_SPI_MOSI_PIN, SOFT_SPI_SCK_PIN, SPI_MODE> spi;
+#elif defined (SPI_UART)
+  SPIUARTClass uspi;
+#endif
+
   uint8_t ce_pin; /**< "Chip Enable" pin, activates the RX or TX role */
   uint8_t csn_pin; /**< SPI Chip select */
-  
+#if defined (__linux)
+  uint16_t spi_speed; /**< SPI Bus Speed */
+  uint8_t spi_rxbuff[32+1] ; //SPI receive buffer (payload max 32 bytes)
+  uint8_t spi_txbuff[32+1] ; //SPI transmit buffer (payload max 32 bytes + 1 byte for the command)
+#endif  
   bool p_variant; /* False for RF24L01 and true for RF24L01P */
   uint8_t payload_size; /**< Fixed size of payloads */
   bool dynamic_payloads_enabled; /**< Whether dynamic payloads are enabled. */
   uint8_t pipe0_reading_address[5]; /**< Last address set on pipe 0 for reading. */
-  uint8_t addr_width;
-  
+  uint8_t addr_width; /**< The address width to use - 3,4 or 5 bytes. */
+  uint32_t lastAvailableCheck; /**< Limits the amount of time between reading data, only when switching between modes */
+  bool listeningStarted; /**< Var for delaying available() after start listening */
 
+
+  
 public:
 
   /**
@@ -72,16 +90,16 @@ public:
    *
    * @param _cepin The pin attached to Chip Enable on the RF module
    * @param _cspin The pin attached to Chip Select
+   * @param spispeed For RPi, the SPI speed in MHZ ie: BCM2835_SPI_SPEED_8MHZ
    */
   RF24(uint8_t _cepin, uint8_t _cspin);
-
+  //#if defined (RF24_LINUX)
+  RF24(uint8_t _cepin, uint8_t _cspin, uint32_t spispeed );
+  //#endif
   /**
    * Begin operation of the chip
    *
    * Call this in setup(), before calling any other methods.
-   *
-   * @note Optimization: The radio is partially configured in PTX mode
-   * when begin is called to make the transition to PTX mode simpler.
    */
   void begin(void);
 
@@ -90,7 +108,7 @@ public:
    *
    * Be sure to call openReadingPipe() first.  Do not call write() while
    * in this mode, without first calling stopListening().  Call
-   * isAvailable() to check for incoming traffic, and read() to get it.
+   * Available() to check for incoming traffic, and read() to get it.
    */
   void startListening(void);
 
@@ -98,26 +116,11 @@ public:
    * Stop listening for incoming messages
    *
    * Do this before calling write().
-   *
-   * @note Optimization: The radio will be taken out of PRX mode as soon
-   * as listening is stopped. Enables quicker and simpler engaging of
-   * primary transmitter (PTX) mode.
    */
   void stopListening(void);
 
   /**
    * Test whether there are bytes available to be read
-   *
-   * @note Optimization: The available functino now checks the FIFO
-   * buffers directly for data instead of relying of interrupt flags.
-   *
-   * @note Interrupt flags will not be cleared until a payload is
-   * actually read from the FIFO
-   *
-   * @see txStandBy()
-   * @see startWrite()
-   * @see write()
-   * @see writeFast()
    *
    * @return True if there is a payload available, false if none is
    */
@@ -131,9 +134,9 @@ public:
    * @note I specifically chose 'void*' as a data type to make it easier
    * for beginners to use.  No casting needed.
    *
-   * @note Optimization: No longer boolean. Use available to
-   * determine if packets are available. Interrupt flags are now cleared
-   * during reads instead of when calling available().
+   * @note No longer boolean. Use available to determine if packets are
+   * available. Interrupt flags are now cleared during reads instead of
+   * when calling available().
    *
    * @param buf Pointer to a buffer where the data should be written
    * @param len Maximum number of bytes to read into the buffer
@@ -142,15 +145,12 @@ public:
   void read( void* buf, uint8_t len );
 
   /**
-   * @note Optimization: Improved performance slightly
-   * Write to the open writing pipe
-   *
    * Be sure to call openWritingPipe() first to set the destination
    * of where to write to.
    *
    * This blocks until the message is successfully acknowledged by
    * the receiver or the timeout/retransmit maxima are reached.  In
-   * the current configuration, the max delay here is 60ms.
+   * the current configuration, the max delay here is 60-70ms.
    *
    * The maximum size of data written is the fixed payload size, see
    * getPayloadSize().  However, you can write less, and the remainder
@@ -165,9 +165,10 @@ public:
   bool write( const void* buf, uint8_t len );
 
   /**
-   * New: Open a pipe for writing
+   * New: Open a pipe for writing via byte array. Old addressing format retained
+   * for compatibility.
    *
-   * Only one pipe can be open at once, but you can change the pipe
+   * Only one writing pipe can be open at once, but you can change the address
    * you'll write to. Call stopListening() first.
    *
    * Addresses are assigned via a byte array, default is 5 byte address length
@@ -213,14 +214,7 @@ public:
 
   void openReadingPipe(uint8_t number, const uint8_t *address);
 
-  /**
-   * Close a pipe after it has been previously opened.
-   * Can be safely called without having previously opened a pipe.
-   * @param pipe Which pipe # to close, 0-5.
-   */
-  void closeReadingPipe( uint8_t pipe ) ;
-
-  /**@}*/
+   /**@}*/
   /**
    * @name Advanced Operation
    *
@@ -240,13 +234,16 @@ public:
    * FIFO buffers. This optimized version does not rely on interrupt
    * flags, but checks the actual FIFO buffers.
    *
-   * @note Optimization: Interrupt flags are no longer cleared when available is called,
-   * but will be reset only when the data is read from the FIFO buffers.
-   *
    * @param[out] pipe_num Which pipe has the payload available
    * @return True if there is a payload available, false if none is
    */
   bool available(uint8_t* pipe_num);
+
+  /**
+   * Check if the radio needs to be read. Can be used to prevent data loss
+   * @@return True if all three 32-byte radio buffers are full
+   */
+  bool rxFifoFull();
 
   /**
    * Enter low-power mode
@@ -254,20 +251,24 @@ public:
    * To return to normal power mode, either write() some data or
    * startListening, or powerUp().
    *
-   * @note Optimization: The radio will never enter power down unless instructed
-   * by the MCU via this command.
+   * @note After calling startListening(), a basic radio will consume about 13.5mA
+   * at max PA level.
+   * During active transmission, the radio will consume about 11.5mA, but this will
+   * be reduced to 26uA (.026mA) between sending.
+   * In full powerDown mode, the radio will consume approximately 900nA (.0009mA)   
    */
   void powerDown(void);
 
   /**
-   * Leave low-power mode - making radio more responsive
-   *
+   * Leave low-power mode - required for normal radio operation after calling powerDown()
+   * 
    * To return to low power mode, call powerDown().
+   * @note This will take up to 5ms for maximum compatibility 
    */
   void powerUp(void) ;
 
   /**
-  * Write for single NOACK writes. Disables acknowledgements/autoretries for a single write.
+  * Write for single NOACK writes. Optionally disables acknowledgements/autoretries for a single write.
   *
   * @note enableDynamicAck() must be called to enable this feature
   *
@@ -283,13 +284,12 @@ public:
   bool write( const void* buf, uint8_t len, const bool multicast );
 
   /**
-   * @note Optimization: New Command   *
    * This will not block until the 3 FIFO buffers are filled with data.
    * Once the FIFOs are full, writeFast will simply wait for success or
    * timeout, and return 1 or 0 respectively. From a user perspective, just
    * keep trying to send the same data. The library will keep auto retrying
    * the current payload using the built in functionality.
-   * @warning It is important to never keep the nRF24L01 in TX mode for more than 4ms at a time. If the auto
+   * @warning It is important to never keep the nRF24L01 in TX mode and FIFO full for more than 4ms at a time. If the auto
    * retransmit is enabled, the nRF24L01 is never in TX mode long enough to disobey this rule. Allow the FIFO
    * to clear by issuing txStandBy() or ensure appropriate time between transmissions.
    *
@@ -329,12 +329,11 @@ public:
   bool writeFast( const void* buf, uint8_t len, const bool multicast );
 
   /**
-   * @note Optimization: New Command
    * This function extends the auto-retry mechanism to any specified duration.
    * It will not block until the 3 FIFO buffers are filled with data.
    * If so the library will auto retry until a new payload is written
    * or the user specified timeout period is reached.
-   * @warning It is important to never keep the nRF24L01 in TX mode for more than 4ms at a time. If the auto
+   * @warning It is important to never keep the nRF24L01 in TX mode and FIFO full for more than 4ms at a time. If the auto
    * retransmit is enabled, the nRF24L01 is never in TX mode long enough to disobey this rule. Allow the FIFO
    * to clear by issuing txStandBy() or ensure appropriate time between transmissions.
    *
@@ -359,7 +358,6 @@ public:
   bool writeBlocking( const void* buf, uint8_t len, uint32_t timeout );
 
   /**
-   * @note Optimization: New Command
    * This function should be called as soon as transmission is finished to
    * drop the radio back to STANDBY-I mode. If not issued, the radio will
    * remain in STANDBY-II mode which, per the data sheet, is not a recommended
@@ -387,8 +385,6 @@ public:
    bool txStandBy();
 
   /**
-   * @note Optimization: New Command
-   *
    * This function allows extended blocking and auto-retries per a user defined timeout
    * @code
    *	Fully Blocking Example:
@@ -412,8 +408,7 @@ public:
    * The next time a message is received on @p pipe, the data in @p buf will
    * be sent back in the acknowledgement.
    *
-   * @warning According to the data sheet, only three of these can be pending
-   * at any time as there are only 3 FIFO buffers.
+   * @warning Only three of these can be pending at any time as there are only 3 FIFO buffers.
    *
    * @param pipe Which pipe# (typically 1-5) will get this response.
    * @param buf Pointer to data that is sent
@@ -438,13 +433,9 @@ public:
 
   /**
    * Determine if an ack payload was received in the most recent call to
-   * write().
+   * write(). The regular available() can also be used.
    *
    * Call read() to retrieve the ack payload.
-   *
-   * @note Optimization: Calling this function NO LONGER clears the interrupt
-   * flag. The new functionality checks the RX FIFO buffer for an ACK payload
-   * instead of relying on interrupt flags.Reading the payload will clear the flags.
    *
    * @return True if an ack payload is available.
    */
@@ -468,7 +459,7 @@ public:
    * @note Optimization: This function now leaves the CE pin high, so the radio
    * will remain in TX or STANDBY-II Mode until a txStandBy() command is issued.
    * This allows the chip to be used to its full potential in TX mode.
-   * @warning It is important to never keep the nRF24L01 in TX mode for more than 4ms at a time. If the auto
+   * @warning It is important to never keep the nRF24L01 in TX mode with FIFO full for more than 4ms at a time. If the auto
    * retransmit is enabled, the nRF24L01 is never in TX mode long enough to disobey this rule. Allow the FIFO
    * to clear by issuing txStandBy() or ensure appropriate time between transmissions.
    *
@@ -494,10 +485,6 @@ public:
    * Just like write(), but it returns immediately. To find out what happened
    * to the send, catch the IRQ and then call whatHappened().
    *
-   * @note Optimization: This function again behaves as it did previously for backwards-compatibility.
-   * with user code. The library uses startFastWrite() internally.
-   * This is mainly used for single-payload transactions.
-   *
    * @see write()
    * @see writeFast()
    * @see startFastWrite()
@@ -515,8 +502,6 @@ public:
   void startWrite( const void* buf, uint8_t len, const bool multicast );
 
   /**
-   * Optimization: New Command
-   *
    * This function is mainly used internally to take advantage of the auto payload
    * re-use functionality of the chip, but can be beneficial to users as well.
    *
@@ -588,7 +573,7 @@ public:
   * @param rx_ready Mask payload received interrupts
   */
   void maskIRQ(bool tx_ok,bool tx_fail,bool rx_ready);
-
+  
   /**
   * Set the address width from 3 to 5 bytes (24, 32 or 40 bit)
   *
@@ -597,6 +582,14 @@ public:
 
   void setAddressWidth(uint8_t a_width);
 
+  
+   /**
+   * Close a pipe after it has been previously opened.
+   * Can be safely called without having previously opened a pipe.
+   * @param pipe Which pipe # to close, 0-5.
+   */
+  void closeReadingPipe( uint8_t pipe ) ;
+  
   /**@}*/
 
   /**@}*/
@@ -654,7 +647,7 @@ public:
    * For dynamic payloads, this pulls the size of the payload off
    * the chip
    *
-   * @note Optimization: Corrupt packets are now detected and flushed per the
+   * @note Corrupt packets are now detected and flushed per the
    * manufacturer.
    *
    * @return Payload length of last-received dynamic payload
@@ -667,7 +660,7 @@ public:
    * Ack payloads are a handy way to return data back to senders without
    * manually changing the radio modes on both units.
    *
-   * @see examples/pingpair_pl/pingpair_pl.pde
+   * @see examples/GettingStarted_CallResponse/GettingStarted_CallResponse.ino
    */
   void enableAckPayload(void);
 
@@ -792,9 +785,11 @@ public:
    *  }
    * @endcode
   */
-  #if defined (FAILURE_HANDLING)
+  //#if defined (FAILURE_HANDLING)
     bool failureDetected; 
-  #endif
+  //#endif
+  
+  
   /**@}*/
   /**
    * @name Deprecated
@@ -941,6 +936,7 @@ private:
    */
   uint8_t get_status(void);
 
+  #if !defined (MINIMAL)
   /**
    * Decode and print the given status to stdout
    *
@@ -984,7 +980,7 @@ private:
    * @param qty How many successive registers to print
    */
   void print_address_register(const char* name, uint8_t reg, uint8_t qty = 1);
-
+#endif
   /**
    * Turn on or off the special features of the chip
    *
@@ -1096,6 +1092,18 @@ private:
  * ping/pong cycle, and the receiver sleeps between payloads. <br>
  */
 
+ /**
+ * @example rf24ping85.ino
+ * <b>New: Contributed by https://github.com/tong67</b><br>
+ * This is an example of how to use the RF24 class to communicate with ATtiny85 and other node. <br>
+ */
+ 
+ /**
+ * @example timingSearch3pin.ino
+ * <b>New: Contributed by https://github.com/tong67</b><br>
+ * This is an example of how to determine the correct timing for ATtiny when using only 3-pins
+ */
+  
 /**
  * @example pingpair_dyn.ino
  *
@@ -1163,6 +1171,7 @@ private:
  *
  * <b>Main changes: </b><br>
  * - The library has been tweaked to allow full use of the FIFO buffers for maximum transfer speeds
+ * - Many issues and bugs have been resolved
  * - Changes to read() and available () functionality have increased reliability and response
  * - Extended timeout periods have been added to aid in noisy or otherwise unreliable environments
  * - Delays have been removed where possible to ensure maximum efficiency
@@ -1178,9 +1187,12 @@ private:
  *
  * @li <a href="http://tmrh20.github.io/">Documentation Main Page</a>
  * @li <a href="http://tmrh20.github.io/RF24/classRF24.html">RF24 Class Documentation</a>
+ * @li <a href="http://tmrh20.blogspot.com/2014/03/high-speed-data-transfers-and-wireless.html">My Blog: RF24 Optimization Overview</a>
  * @li <a href="https://github.com/tmrh20/RF24/">Source Code</a>
  * @li <a href="https://github.com/TMRh20/RF24/archive/master.zip">Download</a>
  * @li <a href="http://www.nordicsemi.com/files/Product/data_sheet/nRF24L01_Product_Specification_v2_0.pdf">Chip Datasheet</a>
+ * @li <a href="http://tmrh20.github.io/RF24Network/">RF24Network: Easily create a home or long-range RF24 sensor network</a>
+ * @li <a href="http://tmrh20.blogspot.com/2014/03/arduino-radiointercomwireless-audio.html">My Blog: RF24 Wireless Audio</a>
  * @li <a href="https://github.com/maniacbug/RF24">Original Library</a>
  *
  * This chip uses the SPI bus, plus two chip control pins.  Remember that pin 10 must still remain an output, or
@@ -1193,12 +1205,11 @@ private:
  * - Mega Boards (1280, 2560, etc)
  * - Arduino Due: Must use one of the hardware SS/CSN pins as extended SPI methods are used.
  *  Initial Due support taken from https://github.com/mcrosson/RF24/tree/due
- * - ATTiny board support added from https://github.com/jscrane/RF24
+ * - ATTiny board support initially added from https://github.com/jscrane/RF24
  * Note: ATTiny support is built into the library. Do not include SPI.h. <br>
- * ATTiny 85: D0(pin 5): MISO, D1(pin6) MOSI, D2(pin7) SCK, D3(pin2):CSN/SS, D4(pin3): CE <br>
- * ATTiny 84: PA6:MISO, PA5:MOSI, PA4:SCK, PA7:CSN/SS,  CE as desired <br>
+ * See the included examples for more info on using ATTiny with RF24 <br>
  * See https://github.com/TCWORLD/ATTinyCore/tree/master/PCREL%20Patch%20for%20GCC for ATTiny patch
- * - Raspberry Pi Support: See the readme at https://github.com/TMRh20/RF24/tree/master/RPi
+ * - Raspberry Pi Support: See the readme at https://github.com/TMRh20/RF24/tree/master/RPi/RF24
  *
  * @section More More Information
  *
