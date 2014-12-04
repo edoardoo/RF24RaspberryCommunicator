@@ -14,6 +14,8 @@ RF24 radio(RPI_V2_GPIO_P1_22, RPI_V2_GPIO_P1_24, BCM2835_SPI_SPEED_8MHZ);
 const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 //const uint8_t pipes[][6] = {"1Node","2Node"};
 
+// hack to avoid SEG FAULT, issue #46 on RF24 github https://github.com/TMRh20/RF24.git
+unsigned long  got_message;
 
 void setup(void){
 	//Prepare the radio module
@@ -31,7 +33,7 @@ void setup(void){
 
 }
 
-bool switchLight(int action){
+bool sendMessage(int action){
 	//This function send a message, the 'action', to the arduino and wait for answer
 	//Returns true if ACK package is received
 	//Stop listening
@@ -64,7 +66,6 @@ bool switchLight(int action){
 		return false;
 	}else{
 		//If we received the message in time, let's read it and print it
-		unsigned long  got_message;
 		radio.read( &got_message, sizeof(unsigned long) );
 		printf("Yay! Got this response %lu.\n\r",got_message);
 		return true;
@@ -90,10 +91,9 @@ int main( int argc, char ** argv){
 
 			while(switched == false && counter < 5){
 
-				switched = switchLight(atoi(optarg));
+				switched = sendMessage(atoi(optarg));
 
 				counter ++; 
-				sleep(1);
 			}
 
 
@@ -104,7 +104,7 @@ int main( int argc, char ** argv){
 
 
 			printf("\n\rExample (id number 12, action number 1): ");
-			printf("\nsudo ./switch -m 121\n");
+			printf("\nsudo ./remote -m 121\n");
 		}
 
 		//return 0 if everything went good, 2 otherwise
