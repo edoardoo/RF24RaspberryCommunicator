@@ -92,8 +92,10 @@ int main( int argc, char ** argv){
 			while(switched == false && counter < 5){
 
 				switched = sendMessage(atoi(optarg));
+				
+				counter ++;
 
-				counter ++; 
+				sleep(1);
 			}
 
 
